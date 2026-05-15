@@ -2,6 +2,7 @@ import streamlit as st
 import time
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
+from peft import PeftModel
 from threading import Thread
 
 # ==========================================
@@ -9,7 +10,6 @@ from threading import Thread
 # ==========================================
 st.set_page_config(page_title="Alignment Arena | DPO vs SFT", layout="wide", initial_sidebar_state="collapsed")
 
-# Custom CSS for an "Elite Engineering" look
 st.markdown("""
     <style>
     .stApp { background-color: #0E1117; color: #FAFAFA; }
@@ -26,23 +26,33 @@ st.markdown("<h1 class='header-text'>⚔️ The Alignment Arena</h1>", unsafe_al
 st.markdown("<p style='text-align: center; color: #8892B0;'>Benchmarking Base SFT Reasoning vs. Length-Debiased DPO Alignment</p>", unsafe_allow_html=True)
 
 # ==========================================
-# 2. MODEL LOADING (Cached)
+# 2. DYNAMIC LORA MODEL LOADING (Mac Optimized)
 # ==========================================
-@st.cache_resource(show_spinner="Loading Models into Mac Unified Memory...")
+@st.cache_resource(show_spinner="Loading Base Model & Adapters into Mac Memory...")
 def load_models():
+    # 1. Define the Base Model and your Adapters
+    BASE_MODEL_ID = "Qwen/Qwen2.5-3B" # We use the standard base model for Mac
     SFT_ID = "nallaramu/deliberate-qwen-2.5-3b-reasoning"
     DPO_ID = "nallaramu/deliberate-qwen-2.5-3b-dpo"
     
     tokenizer = AutoTokenizer.from_pretrained(SFT_ID)
     
-    # MAC FIX: Removed load_in_4bit, using torch.float16. 
-    # device_map="auto" will automatically use Apple's 'mps' (Metal Performance Shaders)
-    sft_model = AutoModelForCausalLM.from_pretrained(SFT_ID, torch_dtype=torch.float16, device_map="auto")
-    dpo_model = AutoModelForCausalLM.from_pretrained(DPO_ID, torch_dtype=torch.float16, device_map="auto")
+    # 2. Load the heavy Base Model ONCE in 16-bit
+    base_model = AutoModelForCausalLM.from_pretrained(
+        BASE_MODEL_ID, 
+        torch_dtype=torch.float16, 
+        device_map="auto"
+    )
     
-    return tokenizer, sft_model, dpo_model
+    # 3. Attach the SFT Adapter
+    model = PeftModel.from_pretrained(base_model, SFT_ID, adapter_name="sft")
+    
+    # 4. Attach the DPO Adapter alongside it
+    model.load_adapter(DPO_ID, adapter_name="dpo")
+    
+    return tokenizer, model
 
-tokenizer, sft_model, dpo_model = load_models()
+tokenizer, shared_model = load_models()
 
 # ==========================================
 # 3. UI LAYOUT
@@ -64,16 +74,18 @@ with col2:
     dpo_text_box = st.empty()
     dpo_metrics = st.empty()
 
-# Setup initial UI states
 sft_text_box.markdown("<div class='model-box'>Waiting for prompt...</div>", unsafe_allow_html=True)
 dpo_text_box.markdown("<div class='model-box'>Waiting for prompt...</div>", unsafe_allow_html=True)
 
 # ==========================================
-# 4. GENERATION ENGINE
+# 4. GENERATION ENGINE (Dynamic Swapping)
 # ==========================================
-def run_generation(model, placeholder, metrics_placeholder):
+def run_generation(adapter_name, placeholder, metrics_placeholder):
+    # Dynamically swap to the requested personality (takes 0.01 seconds)
+    shared_model.set_adapter(adapter_name)
+    
     prompt = f"### Question:\n{query}\n\n### Reasoning:\n"
-    inputs = tokenizer([prompt], return_tensors="pt").to(model.device)
+    inputs = tokenizer([prompt], return_tensors="pt").to(shared_model.device)
     
     streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
     generation_kwargs = dict(
@@ -85,27 +97,23 @@ def run_generation(model, placeholder, metrics_placeholder):
         pad_token_id=tokenizer.eos_token_id
     )
     
-    # Start thread
-    thread = Thread(target=model.generate, kwargs=generation_kwargs)
+    thread = Thread(target=shared_model.generate, kwargs=generation_kwargs)
     thread.start()
     
     generated_text = ""
     start_time = time.time()
     tokens = 0
     
-    # Stream text and update metrics live
     for new_text in streamer:
         generated_text += new_text
         tokens += 1
         elapsed = time.time() - start_time
         tok_sec = tokens / elapsed if elapsed > 0 else 0
         
-        # Color the <think> and <answer> tags for better visibility
         display_text = generated_text.replace("<think>", "🔄 **<think>**\n").replace("</think>", "\n**</think>**").replace("<answer>", "✅ **<answer>**\n")
         
         placeholder.markdown(f"<div class='model-box'>{display_text}</div>", unsafe_allow_html=True)
         
-        # Update Live Metrics
         metrics_placeholder.markdown(f"""
             <div class='metric-container'>
                 <div class='metric-item'><div class='metric-value'>{elapsed:.1f}s</div><div class='metric-label'>Latency</div></div>
@@ -120,11 +128,10 @@ def run_generation(model, placeholder, metrics_placeholder):
 # 5. EXECUTION TRIGGER
 # ==========================================
 if start_btn:
-    # Run sequentially to prevent CUDA out-of-memory errors and allow the user to watch the contrast
     with st.spinner("Generating SFT Base Response..."):
-        run_generation(sft_model, sft_text_box, sft_metrics)
+        run_generation("sft", sft_text_box, sft_metrics)
         
     with st.spinner("Generating DPO Aligned Response..."):
-        run_generation(dpo_model, dpo_text_box, dpo_metrics)
+        run_generation("dpo", dpo_text_box, dpo_metrics)
         
     st.success("✅ Benchmark Complete! Notice the token reduction and strict format compliance in the DPO model.")
