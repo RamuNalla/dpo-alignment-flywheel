@@ -4,7 +4,7 @@
 [![Weights & Biases](https://img.shields.io/badge/W&B-Tracked-yellow)](https://wandb.ai)
 [![Unsloth](https://img.shields.io/badge/Optimization-Unsloth-blue)](https://github.com/unslothai/unsloth)
 
-Supervised Fine-Tuning (SFT) is great for teaching a model *how* to reason, but it struggles to teach a model *when to stop*. SFT models frequently suffer from "length bias" and EOS (End of Sequence) hallucinations, resulting in infinite loops and skyrocketing token costs.
+Supervised Fine-Tuning (SFT) is great for teaching a model how to reason, but it struggles to teach a model when to stop. SFT models frequently suffer from "length bias" and EOS (End of Sequence) hallucinations, resulting in infinite loops and skyrocketing token costs.
 
 This project implements an end-to-end **Direct Preference Optimization (DPO) pipeline** to align a 3B parameter reasoning model. By building an automated RLAIF (Reinforcement Learning from AI Feedback) data flywheel and applying strict algorithmic length-debiasing, I cured the model's hallucination loops. The result is a model that uses **47% fewer tokens** to solve complex logic puzzles, with **zero "Alignment Tax"** on mathematical accuracy.
 
